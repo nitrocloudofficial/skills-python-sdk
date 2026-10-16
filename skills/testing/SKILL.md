@@ -16,18 +16,24 @@ import asyncio
 from nitrostack import DIContainer, NitroTestingModule
 from app_module import AppModule
 
-def test_calculate():
+def test_calculator():
     async def run():
         harness = await NitroTestingModule.create(AppModule)
         result = await harness.call_tool("calculate", {"operation": "add", "a": 5, "b": 3})
         assert result["result"] == 8
-        assert "routes" in await harness.read_resource("flight://popular-routes")
-        messages = await harness.get_prompt("flight_search_assistant", {"destination": "Oslo"})
-        assert "Oslo" in str(messages)
+        converted = await harness.call_tool(
+            "convert_temperature", {"value": 100, "from_unit": "celsius", "to_unit": "fahrenheit"}
+        )
+        assert converted["result"] == 212
+        assert "Cannot divide by zero" in str(
+            await harness.call_tool("calculate", {"operation": "divide", "a": 1, "b": 0})
+        )
 
     DIContainer.reset()
     asyncio.run(run())
 ```
+
+This tests the `python-starter` calculator. `read_resource(uri)` and `get_prompt(name, args)` work the same way for resources and prompts.
 
 - `call_tool(name, args)` takes the arguments as an MCP client sends them (a flat dict, not the Pydantic model) and returns the decoded result: JSON is parsed.
 - Errors come back as their message string, not as exceptions. Assert on the text: `assert "Access denied" in str(result)`.
