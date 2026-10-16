@@ -1,0 +1,21 @@
+name: Check skills
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # The SDK can rename or drop an export without a change here.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install nitrostack
+      - run: python scripts/check_skills.py

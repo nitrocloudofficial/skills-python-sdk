@@ -1,115 +1,93 @@
 ---
 name: nitrostack-python-ui-widgets
-description: Best practices for linking Python MCP tools to UI widgets, WidgetOptions, CSP, application modes, and preview.
+description: Python NitroStack MCP Apps widgets — @widget, widgets/out HTML, WidgetOptions, and preview.
 ---
 
 ## When to Use
-Use this skill when attaching UI widgets to Python MCP tool outputs (e.g. interactive cards, map views, flight cards, or forms) and configuring widget routes, CSP, and preview rendering.
 
----
+Attaching UI to a Python tool result (Calculator, Pizzaz, flight-booking). Not `@nitrostack/ui` npm widgets.
 
-## 1. Associating a Widget with a Tool (`@widget`)
+## Associate a widget with a tool
 
-Decorate any `@tool` method with `@widget("route-name")` or with `@widget(WidgetOptions(...))` to bind frontend HTML/React components to tool results.
+Decorate any `@tool` method with `@widget("route-name")` or `@widget(WidgetOptions(...))`.
 
-### Simple Route Binding:
 ```python
-from nitrostack import injectable, tool, widget, ExecutionContext
 from pydantic import BaseModel
-
-class ProductInput(BaseModel):
-    product_id: str
-
-@injectable()
-class StoreTools:
-    @tool(name="get_product", description="Fetch product card", input_schema=ProductInput)
-    @widget("product-card")  # Maps to widgets/out/product-card.html
-    async def get_product(self, input: ProductInput, context: ExecutionContext) -> dict:
-        return {
-            "name": "Super Nitro Coffee",
-            "price": 4.99,
-            "stock": 42,
-        }
-```
-
-### Advanced WidgetOptions with CSP & Border:
-```python
 from nitrostack import injectable, tool, widget, WidgetOptions, WidgetCsp, ExecutionContext
-from pydantic import BaseModel
 
-class LocationInput(BaseModel):
+class CalculateInput(BaseModel):
+    a: float
+    b: float
+
+class MapInput(BaseModel):
     city: str
 
 @injectable()
-class MapTools:
-    @tool(name="show_store_map", description="Show interactive map of stores", input_schema=LocationInput)
-    @widget(
-        WidgetOptions(
-            route="store-map",
-            prefers_border=True,
-            csp=WidgetCsp(
-                resource_domains=["https://api.mapbox.com", "https://events.mapbox.com"],
-                connect_domains=["https://api.mapbox.com"],
-            ),
-        )
-    )
-    async def show_map(self, input: LocationInput, context: ExecutionContext) -> dict:
-        return {"city": input.city, "stores": [{"name": "Downtown", "lat": 37.77, "lng": -122.41}]}
+class WidgetTools:
+    @tool(name="calculate", description="Add two numbers", input_schema=CalculateInput)
+    @widget("calculator-result")
+    async def calculate(self, input: CalculateInput, context: ExecutionContext) -> dict:
+        return {"result": input.a + input.b, "expression": f"{input.a} + {input.b}"}
+
+    @tool(name="show_pizza_map", description="Pizza shops on a map", input_schema=MapInput)
+    @widget(WidgetOptions(
+        route="pizza-map",
+        prefers_border=True,
+        csp=WidgetCsp(
+            resource_domains=["https://api.mapbox.com"],
+            connect_domains=["https://api.mapbox.com"],
+        ),
+    ))
+    async def show_pizza_map(self, input: MapInput, context: ExecutionContext) -> dict:
+        return {"city": input.city, "shops": []}
 ```
 
----
+Return JSON/`dict` from the tool; the widget HTML reads `structuredContent` / injected tool data. Do not return a React tree from Python.
 
-## 2. Application Modes (`NITROSTACK_APP_MODE`)
+The SDK registers `ui://widget/<route>.html` as an MCP resource and adds widget `_meta` to `tools/list` and `tools/call` results.
 
-NitroStack supports mode-gated metadata to serve OpenAI and MCP Apps clients simultaneously via the `NITROSTACK_APP_MODE` environment variable (default: `universal`):
+## Application modes (`NITROSTACK_APP_MODE`)
 
-| Mode | Tool `_meta` | Resource MIME Type |
+| Mode | Tool `_meta` | Resource MIME type |
 |---|---|---|
-| `universal` (default) | Populates both OpenAI (`openai/outputTemplate`) and MCP Apps (`_meta.ui`) | `text/html;profile=mcp-app` |
-| `mcp-app` | Standard MCP Apps UI metadata (`resourceUri`, `visibility`, CSP) | `text/html;profile=mcp-app` |
+| `universal` (default) | Both OpenAI (`openai/outputTemplate`) and MCP Apps (`_meta.ui`) | `text/html;profile=mcp-app` |
+| `mcp-app` | MCP Apps UI metadata (`resourceUri`, visibility, CSP) | `text/html;profile=mcp-app` |
 | `openai` | OpenAI template metadata (`ui/template`, `outputTemplate`) | `text/html` |
 
----
+`init` sets `universal` by default so one server works with OpenAI and MCP Apps hosts.
 
-## 3. Widget Files & Directory Layout
+## Files
 
-- **`widgets/out/{route}.html`**: The production HTML bundle rendered inside the MCP host's webview. NitroStack automatically exposes this file as an MCP resource with URI `ui://widget/{route}.html`.
-- **`widgets/preview.html`**: Static preview page for inspecting widget templates during development.
-- **`src/widgets/`** (optional): Next.js or React frontend source app when using a multi-package setup.
+- `widgets/out/<route>.html`: the page the MCP host loads. `nitrostack-py init` creates a missing one for every route in `@widget("...")` and `WidgetOptions(route="...")`. The SDK also looks in `src/widgets/out` and `dist/widgets/out`.
+- `widgets/preview.html`: static helper. Live preview: `http://localhost:3000/widgets/preview`.
+- Optional `src/widgets/` Next.js app: when present, `init` runs `npm install` there and `nitrostack-py dev` starts it on `WIDGETS_DEV_PORT` (default 3001). Bundled templates ship plain HTML in `widgets/out`. MCP server port is `PORT` (default 3000).
+- Widget pages are self-contained: plain CSS (inline styles, a `<style>` block, or CSS modules). Do not depend on Tailwind.
 
----
+## Data flow
 
-## 4. Widget Data Flow Protocol
+1. The `@tool` method returns a `dict` or Pydantic model.
+2. NitroStack embeds serialized data as `structuredContent` in the MCP response metadata.
+3. The widget HTML loads in the host webview and reads injected data via the MCP Apps bridge (`window.addEventListener('message', ...)`).
 
-1. **Python Tool Execution**: The `@tool` method executes and returns standard Python `dict` or Pydantic `BaseModel` data.
-2. **Host Delivery**: NitroStack embeds the serialized data as `structuredContent` in the MCP JSON-RPC response metadata.
-3. **Webview Rendering**: The widget HTML bundle loads inside the client iframe and reads the injected tool data via the standard MCP Apps bridge (`window.addEventListener('message', ...)`).
+## Development and Inspector
 
-> [!IMPORTANT]
-> Always return clean domain data (`dict` or Pydantic models) from your Python `@tool` methods. Do not return raw React or HTML trees from Python handlers.
-
----
-
-## 5. Development & Testing Workflow
-
-### Running Dev Server with Hot-Reload:
 ```bash
 nitrostack-py dev --port 3000 --widget 3001
 ```
 
-### Testing in MCP Inspector:
-For MCP Inspector over HTTP, run in stateless mode:
+For MCP Inspector over HTTP (stateless):
+
 ```bash
 MCP_TRANSPORT_TYPE=http MCP_STATELESS=true NITROSTACK_APP_MODE=universal python main.py
 ```
-- Connect MCP Inspector to `http://localhost:3000/mcp` (Streamable HTTP, no trailing slash).
-- Turn **Authentication off** in Inspector (unless actively testing OAuth endpoints).
-- Navigate to the **Apps** tab to view live interactive widget rendering.
-- Live widget preview is also accessible directly at: `http://localhost:3000/widgets/preview`.
 
----
+- Connect to `http://localhost:3000/mcp` (Streamable HTTP, no trailing slash).
+- Turn **Authentication off** in Inspector unless testing OAuth (otherwise it POSTs `/register` and fails with `Cannot POST /register`).
+- Use the **Apps** tab for live widget rendering.
 
-## Do Not
-- Do not set `_meta.ui.resourceUri` to anything other than a `ui://widget/...` URI.
-- Do not use complex nested route paths; use clean kebab-case names (e.g. `product-card`, `flight-results`).
-- Do not attempt to run TypeScript `@nitrostack/widgets` hooks directly in Python runtime code.
+## Do not
+
+- Scaffold a TypeScript widget package as the source of truth for Python tools.
+- Use complex nested route paths; use kebab-case names (`calculator-result`, `flight-results`).
+- Set `_meta.ui.resourceUri` to anything other than a `ui://widget/...` URI.
+- Run TypeScript `@nitrostack/widgets` hooks directly in Python runtime code.

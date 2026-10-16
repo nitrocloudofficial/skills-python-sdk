@@ -1,10 +1,21 @@
 ---
 name: nitrostack-python-auth-security
-description: Best practices for implementing JWT, API Keys, OAuth 2.1, RBAC, and Scope Guards in NitroStack Python MCP servers.
+description: API keys, JWT, OAuth 2.1 (OAuthModule, OAuthGuard), and scope checks in NitroStack Python MCP servers.
 ---
 
 ## When to Use
-Use this skill when configuring security modules, implementing user authentication, protecting Python tools/resources with guards, verifying JWTs or API keys, or securing endpoints with OAuth 2.1 and PKCE.
+
+Protecting Python NitroStack tools with API keys, JWTs, or OAuth 2.1 (oauth template, Auth0/introspection). Not the TypeScript `OAuthModule` Nest package.
+
+## Pick a module and guard
+
+Import the module in the root `AppModule`, then guard tools. Guards fill `context.auth` (`subject`, `scopes`, `client_id`, `aud`, `claims`).
+
+| Module | Guard | Configured by |
+|---|---|---|
+| `ApiKeyModule.for_root(keys_env_prefix="API_KEY", hashed=False)` | `ApiKeyGuard` | `x-api-key` header checked against `API_KEY`, `API_KEY_1`, `API_KEY_2`, ... (SHA-256 hashes when `hashed=True`) |
+| `JWTModule.for_root(secret_env_var="JWT_SECRET", audience=..., issuer=...)` | `JwtGuard` | `Authorization: Bearer <jwt>` |
+| `OAuthModule.for_root(resource_uri=..., authorization_servers=[...], ...)` | `OAuthGuard` | OAuth 2.1 access tokens, audience-bound |
 
 ---
 
@@ -13,6 +24,7 @@ Use this skill when configuring security modules, implementing user authenticati
 Use `JWTModule` for stateless token-based authentication.
 
 ### Register `JWTModule` on `AppModule`:
+
 ```python
 from nitrostack import module, ConfigModule, JWTModule
 import os
@@ -22,8 +34,8 @@ import os
     imports=[
         ConfigModule.for_root(env_file_path=".env"),
         JWTModule.for_root(
-            secret_env_var="JWT_SECRET",  # Reads secret from os.environ["JWT_SECRET"]
-            expires_in="24h",             # Token expiration window (e.g., '1h', '24h', '7d')
+            secret_env_var="JWT_SECRET",
+            expires_in="24h",
             audience=os.environ.get("TOKEN_AUDIENCE"),
             issuer=os.environ.get("TOKEN_ISSUER"),
         ),
@@ -34,8 +46,9 @@ class AppModule:
     pass
 ```
 
-### Protect Tools with `JwtGuard`:
-`JwtGuard` automatically extracts the `Bearer <token>` from metadata/headers, verifies the signature, and populates `context.auth` (`AuthContext` containing `subject`, `scopes`, `client_id`, `claims`, etc.).
+### Protect tools with `JwtGuard`:
+
+`JwtGuard` extracts `Bearer <token>` from metadata/headers, verifies the signature, and populates `context.auth`.
 
 ```python
 from nitrostack import injectable, tool, use_guards, JwtGuard, ExecutionContext
@@ -60,11 +73,12 @@ class UserTools:
 
 ---
 
-## 2. API Key Authentication
+## 2. API key authentication
 
 Use `ApiKeyModule` for service-to-service validation.
 
 ### Register `ApiKeyModule`:
+
 ```python
 from nitrostack import module, ApiKeyModule
 
@@ -72,9 +86,9 @@ from nitrostack import module, ApiKeyModule
     name="app",
     imports=[
         ApiKeyModule.for_root(
-            keys_env_prefix="API_KEY",  # Reads API_KEY, API_KEY_1, API_KEY_2, etc.
-            header_name="x-api-key",    # Header to inspect in request metadata
-            hashed=False,               # Set True if stored keys are SHA-256 hashes
+            keys_env_prefix="API_KEY",
+            header_name="x-api-key",
+            hashed=False,
         ),
         SystemModule,
     ],
@@ -83,8 +97,9 @@ class AppModule:
     pass
 ```
 
-### Protect Tools with `ApiKeyGuard`:
-`ApiKeyGuard` checks for the API key in `context.metadata["x-api-key"]` or `context.metadata["headers"]["x-api-key"]` and validates it against `ApiKeyService`.
+### Protect tools with `ApiKeyGuard`:
+
+`ApiKeyGuard` checks `context.metadata["x-api-key"]` or `context.metadata["headers"]["x-api-key"]` and validates against `ApiKeyService`.
 
 ```python
 from nitrostack import injectable, tool, use_guards, ApiKeyGuard, ExecutionContext
@@ -107,9 +122,9 @@ class SystemTools:
 
 ---
 
-## 3. Role-Based Access Control (RBAC) & Custom Guards
+## 3. RBAC and custom guards
 
-Custom guards implement the `Guard` protocol with `async def can_activate(self, context: ExecutionContext) -> bool`. Chain authentication guards before authorization guards using `@use_guards(...)`.
+Custom guards implement `async def can_activate(self, context: ExecutionContext) -> bool`. Chain authentication guards before authorization guards with `@use_guards(...)`.
 
 ```python
 from nitrostack import injectable, tool, use_guards, JwtGuard, ExecutionContext
@@ -118,7 +133,6 @@ from pydantic import BaseModel
 @injectable()
 class AdminGuard:
     async def can_activate(self, context: ExecutionContext) -> bool:
-        # Requires JwtGuard / OAuthGuard to have populated context.auth first
         if not context.auth:
             return False
         return context.auth.claims.get("role") == "admin"
@@ -133,21 +147,24 @@ class AdminTools:
         description="Wipes database. Admin only.",
         input_schema=ResetDbInput,
     )
-    @use_guards(JwtGuard, AdminGuard)  # First authenticate with JWT, then check Admin role
+    @use_guards(JwtGuard, AdminGuard)
     async def reset_database(self, input: ResetDbInput, context: ExecutionContext) -> dict:
         return {"success": True, "initiated_by": context.auth.subject}
 ```
 
 ---
 
-## 4. OAuth 2.1 & Scopes
+## 4. OAuth 2.1 and scopes
 
-Use `OAuthModule` for OAuth 2.1 protected resource metadata discovery and token introspection.
+Use `OAuthModule` for protected-resource metadata and token introspection (or `jwks_uri=...` for local JWT verification).
 
-### Wire `OAuthModule` on `AppModule`:
+The `python-oauth` template wires `OAuthModule.for_root(...)` next to `ConfigModule`. Values come from `.env` (`RESOURCE_URI`, `AUTH_SERVER_URL`, introspection client, audience, issuer). Follow `OAUTH_SETUP.md` in the generated project.
+
 ```python
-from nitrostack import module, ConfigModule, OAuthModule
 import os
+from nitrostack import module, ConfigModule, OAuthModule
+from modules.flights.flights_module import FlightsModule
+from health.system_health import SystemHealthCheck
 
 @module(
     name="app",
@@ -165,52 +182,66 @@ import os
         ),
         FlightsModule,
     ],
+    providers=[SystemHealthCheck],
 )
 class AppModule:
     pass
 ```
 
-### Scope Protection with `require_scopes` or Custom Scope Guards:
-```python
-from nitrostack import injectable, tool, use_guards, OAuthGuard, require_scopes, ExecutionContext
-from pydantic import BaseModel
+### Protect tools with scopes:
 
-class FlightSearchInput(BaseModel):
+```python
+from pydantic import BaseModel
+from nitrostack import injectable, tool, use_guards, require_scopes, OAuthGuard, ExecutionContext
+from guards.oauth_guard import create_scope_guard  # in the oauth template
+
+class SearchInput(BaseModel):
     origin: str
     destination: str
 
 @injectable()
-class FlightTools:
-    @tool(
-        name="search_flights",
-        description="Search available flights",
-        input_schema=FlightSearchInput,
-    )
+class FlightsTools:
+    @tool(name="search_flights", description="Search flights", input_schema=SearchInput)
+    @use_guards(OAuthGuard, create_scope_guard(["read"]))
+    async def search_flights(self, input: SearchInput, context: ExecutionContext) -> dict:
+        return {"offers": []}
+
+    @tool(name="cancel_order", description="Cancel an order", input_schema=SearchInput)
     @use_guards(OAuthGuard)
-    @require_scopes("read")
-    async def search_flights(self, input: FlightSearchInput, context: ExecutionContext) -> dict:
-        return {"flights": []}
+    @require_scopes("admin")
+    async def cancel_order(self, input: SearchInput, context: ExecutionContext) -> dict:
+        return {"cancelled": True}
 ```
 
-### Behavior of `OAuthGuard`:
-- Reads Bearer token from `context.metadata` (`authorization`, `headers`, or `_oauth`).
-- If **no token** and `OAUTH_REQUIRED` is not `true` → allows the call (useful for local development in Studio/Inspector).
-- If **no token** and `OAUTH_REQUIRED=true` → raises `PermissionError`.
-- If token present → validates token via `OAuthService.introspect_token` and populates `context.auth` (`subject`, `scopes`, `aud` as a normalized `list`, `claims`).
+### `OAuthGuard` behavior
+
+- Reads the Bearer token from metadata/headers (HTTP `Authorization` is forwarded into execution metadata).
+- If **no token** and `OAUTH_REQUIRED` is not `true`: allow (local Studio/Inspector).
+- If **no token** and `OAUTH_REQUIRED=true`: `PermissionError`.
+- If a token is present: validate via `OAuthService`, then populate `context.auth` (`aud` is a normalized `list`, not a string).
+
+Two scope checks behave differently without a token:
+
+- The template's `create_scope_guard(["read"])` no-ops when OAuth is not required, so local calls still work.
+- `require_scopes(...)` always needs `context.auth`: with no token it fails with "Not authenticated", even when `OAUTH_REQUIRED` is unset.
 
 ---
 
-## 5. Scope & PKCE Utility Functions
+## 5. Scope and PKCE helpers
 
-NitroStack provides built-in helper functions in `nitrostack`:
-- `has_scope(context.auth, "read")` -> `bool`
-- `has_all_scopes(context.auth, ["read", "write"])` -> `bool`
-- `has_any_scope(context.auth, ["admin", "write"])` -> `bool`
+Built-in helpers in `nitrostack`:
+
+- `has_scope(context.auth, "read")` → `bool`
+- `has_all_scopes(context.auth, ["read", "write"])` → `bool`
+- `has_any_scope(context.auth, ["admin", "write"])` → `bool`
 - `generate_code_verifier()`, `generate_code_challenge(verifier)`, `verify_pkce(verifier, challenge)`
+- `generate_pkce_params()` for a full PKCE parameter set; `generate_www_authenticate_header` for custom flows
 
 ---
 
-## Do Not
-- Do not copy TypeScript `@nitrostack/core` decorator syntax or Passport strategies.
-- Do not assume `context.auth.aud` is a string; NitroStack normalizes `aud` to a `list` to ensure safe membership checks (`"aud" in context.auth.aud`).
-- Do not commit `.env` or hardcode secrets into source files.
+## Do not
+
+- Copy TypeScript `@nitrostack/core` decorator syntax or Passport strategies.
+- Assume `context.auth.aud` is a string; it is normalized to a `list` (`"aud" in context.auth.aud`).
+- Use `ApiKeyGuard` without `ApiKeyModule.for_root()` or an `API_KEY` variable: it then allows every call.
+- Commit `.env` or hardcode secrets into source files.

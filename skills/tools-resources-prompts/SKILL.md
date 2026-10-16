@@ -1,158 +1,119 @@
 ---
 name: nitrostack-python-tools-resources-prompts
-description: Guidelines and patterns for defining Tools, Resources, Prompts, Caching, Rate Limiting, Tasks, and File Uploads in NitroStack Python MCP servers.
+description: Define MCP tools, resources, and prompts in NitroStack Python with Pydantic schemas and ExecutionContext.
 ---
 
 ## When to Use
-Use this skill when defining, validating, or optimizing Tools (`@tool`), Resources (`@resource`), and Prompts (`@prompt`) on a NitroStack Python MCP server using Pydantic schemas, execution context, caching, rate limiting, and background tasks.
 
----
+Defining, editing, or validating tools, resources, or prompts on a **Python** NitroStack server. Use Pydantic `BaseModel`, not Zod. Caching, rate limits, and background tasks are in the runtime-features skill.
 
-## 1. Defining Tools (`@tool`)
+## Tools
 
-An MCP tool exposes a callable function to AI clients. Decorate async methods on an `@injectable` controller class with `@tool`.
+Decorate **async methods on an `@injectable` class** listed in the module's `controllers`. Signature is `(self, input: Model, context: ExecutionContext)`; `input` is an instance of `input_schema`.
 
-### Tool Options:
-* `name` (required): Unique snake_case string identifier.
-* `description` (required): Clear description guiding the LLM when to invoke the tool.
-* `input_schema` (required): Pydantic `BaseModel` class defining input schema.
-* `output_schema` (optional): Pydantic model validating output payload structure.
-* `annotations` (optional): `ToolAnnotations(destructive_hint=..., read_only_hint=..., idempotent_hint=..., open_world_hint=...)`.
-* `task_support` (optional): `"forbidden"`, `"optional"`, or `"required"` for long-running task processing.
-* `visibility` (optional): `"visible"` or `"hidden"`.
+`@tool` options: `name`, `description`, `input_schema` (required), plus optional `title`, `output_schema`, `annotations` (`ToolAnnotations`), `task_support`, `visibility`, `examples` (`ToolExamples`), `invocation`, `metadata`.
 
-### Example:
 ```python
-from nitrostack import injectable, tool, initial_tool, ToolAnnotations, ExecutionContext
-from pydantic import BaseModel, Field
 from typing import Literal
-
-class WeatherInput(BaseModel):
-    city: str = Field(description="City name, e.g., San Francisco")
-    unit: Literal["celsius", "fahrenheit"] = Field(default="celsius", description="Temperature unit")
-
-class WeatherOutput(BaseModel):
-    temperature: float
-    condition: str
-
-@injectable()
-class WeatherTools:
-    @tool(
-        name="get_current_weather",
-        description="Get current weather conditions for a given city.",
-        input_schema=WeatherInput,
-        output_schema=WeatherOutput,
-        annotations=ToolAnnotations(read_only_hint=True),
-    )
-    @initial_tool  # Optional: Auto-invoked when client initializes/connects
-    async def get_weather(self, input: WeatherInput, context: ExecutionContext) -> dict:
-        context.logger.info(f"Fetching weather for {input.city}")
-        return {"temperature": 21.5, "condition": "Sunny"}
-```
-
----
-
-## 2. Tool Policies: Caching (`@cache`) & Rate Limiting (`@rate_limit`)
-
-Control performance and throttle requests with method decorators from `nitrostack`.
-
-### Caching (`@cache`):
-Caches method outputs for a given TTL in seconds. Skips `ExecutionContext` when building cache keys.
-```python
-from nitrostack import injectable, tool, cache, ExecutionContext
-from pydantic import BaseModel
-
-class StatusInput(BaseModel):
-    system_id: str
-
-@injectable()
-class DiagnosticTools:
-    @tool(name="get_system_status", description="Get diagnostic metrics", input_schema=StatusInput)
-    @cache(ttl=60)  # Caches result for 60 seconds
-    async def get_status(self, input: StatusInput, context: ExecutionContext) -> dict:
-        return {"system_id": input.system_id, "healthy": True}
-```
-
-### Rate Limiting (`@rate_limit`):
-Restricts tool execution frequency to a maximum number of calls within a time window (in seconds).
-```python
-from nitrostack import injectable, tool, rate_limit, ExecutionContext
-from pydantic import BaseModel
-
-class DiagnosticInput(BaseModel):
-    deep_scan: bool = False
-
-@injectable()
-class MaintenanceTools:
-    @tool(name="run_diagnostics", description="Runs heavy diagnostics", input_schema=DiagnosticInput)
-    @rate_limit(max=5, window=60)  # Maximum 5 calls per 60 seconds
-    async def run_diagnostics(self, input: DiagnosticInput, context: ExecutionContext) -> dict:
-        return {"scan_complete": True}
-```
-
----
-
-## 3. Asynchronous Background Tasks
-
-For long-running tools, set `task_support="optional"` or `"required"` and use `context.task` for progress reporting and cancellation checks.
-
-```python
-import asyncio
-from nitrostack import injectable, tool, ExecutionContext
 from pydantic import BaseModel, Field
+from nitrostack import injectable, tool, widget, ToolAnnotations, ToolExamples, ExecutionContext
 
-class DataProcessingInput(BaseModel):
-    dataset_url: str = Field(description="URL of dataset to process")
+class CalculateInput(BaseModel):
+    operation: Literal["add", "subtract", "multiply", "divide"] = Field(description="The operation to perform")
+    a: float = Field(description="First number")
+    b: float = Field(description="Second number")
+
+class CalculateOutput(BaseModel):
+    result: float
+    expression: str
 
 @injectable()
-class DataPipelineTools:
+class CalculatorTools:
     @tool(
-        name="process_large_dataset",
-        description="Processes large dataset asynchronously",
-        input_schema=DataProcessingInput,
-        task_support="optional",  # or "required"
+        name="calculate",
+        title="Calculate",
+        description="Perform basic arithmetic calculations",
+        input_schema=CalculateInput,
+        output_schema=CalculateOutput,
+        annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True),
+        examples=ToolExamples(
+            input={"operation": "add", "a": 5, "b": 3},
+            output={"result": 8, "expression": "5 + 3 = 8"},
+        ),
     )
-    async def process_dataset(self, input: DataProcessingInput, context: ExecutionContext) -> dict:
-        total_steps = 5
-        for step in range(1, total_steps + 1):
-            # Check if client cancelled the task
-            if context.task:
-                context.task.throw_if_cancelled()
-                context.task.update_progress(f"Processing step {step}/{total_steps}...")
-
-            await asyncio.sleep(1)  # Simulate processing chunk
-
-        return {"status": "completed", "dataset": input.dataset_url}
+    @widget("calculator-result")
+    async def calculate(self, input: CalculateInput, context: ExecutionContext) -> dict:
+        context.logger.info(f"{input.operation} {input.a} {input.b}")
+        result = input.a + input.b
+        return {"result": result, "expression": f"{input.a:g} + {input.b:g} = {result:g}"}
 ```
 
----
+- Always pass `examples`: client LLMs use them to get argument shapes right.
+- A tool with no arguments still needs an input model. Use an empty subclass (`class NoInput(BaseModel): pass`), never `BaseModel` itself, which fails at startup.
+- `visibility="hidden"` keeps a tool callable but out of `tools/list`.
+- Raise an exception to return an MCP error to the client.
+- Stack `@initial_tool` (before or after `@tool`) to auto-invoke on client connect.
+- Inspector sends empty strings for unused optionals; use Pydantic `field_validator(..., mode="before")` to coerce `""` to defaults when needed.
+- Keep database queries and business logic in a service (`providers`), injected into the controller.
 
-## 4. Handling File Uploads in Tools (Base64)
+## Resources
 
-NitroStack tools receive client file uploads as base64-encoded strings within Pydantic schemas.
+Resource handlers take `(self, context)`. List the class on the feature module `controllers`.
 
-### 1. Define Input Schema:
 ```python
-from pydantic import BaseModel, Field
+from nitrostack import injectable, resource, ResourceAnnotations, ExecutionContext
 
-class FileUploadInput(BaseModel):
-    file_name: str = Field(description="Original file name, e.g., document.pdf")
-    file_type: str = Field(description="MIME type, e.g., application/pdf")
-    file_content: str = Field(description="Base64 encoded file content")
+@injectable()
+class FlightResources:
+    @resource(
+        uri="flight://popular-routes",
+        name="Popular Flight Routes",
+        description="Information about popular routes and pricing",
+        mime_type="application/json",
+        annotations=ResourceAnnotations(audience=["assistant"], priority=1.0),
+    )
+    async def popular_routes(self, context: ExecutionContext) -> dict:
+        return {"routes": [{"from": "JFK", "to": "LHR"}]}
 ```
 
-### 2. Universal Base64 Decoder & Secure File Storage:
+## Prompts
+
+Prompt handlers take `(self, args: dict, context)` and return a string or a list of `PromptMessage`. Declare arguments with `PromptArgument` so clients can ask for them.
+
+```python
+from typing import List
+from nitrostack import injectable, prompt, PromptArgument, PromptMessage, ExecutionContext
+
+@injectable()
+class FlightPrompts:
+    @prompt(
+        name="flight_search_assistant",
+        description="Help users search for flights and book holds.",
+        arguments=[PromptArgument(name="destination", description="Where to fly", required=True)],
+    )
+    async def flight_search_assistant(self, args: dict, context: ExecutionContext) -> List[PromptMessage]:
+        return [PromptMessage(role="user", content=f"Find flights to {args['destination']} with search_flights.")]
+```
+
+## File uploads in tools (base64)
+
+Clients often send uploads as base64 strings in the tool input schema:
+
 ```python
 import base64
 import os
 import re
 from pathlib import Path
+from pydantic import BaseModel, Field
 from nitrostack import injectable, tool, ExecutionContext
+
+class FileUploadInput(BaseModel):
+    file_name: str = Field(description="Original file name")
+    file_content: str = Field(description="Base64 or data-URL encoded content")
 
 UPLOAD_DIR = Path(os.getcwd()) / "uploads"
 
 def decode_base64_file(content: str) -> bytes:
-    """Decodes Data URL or raw base64 string into bytes."""
     data_url_match = re.match(r"^data:[^;]+;base64,(.+)$", content)
     raw_data = data_url_match.group(1) if data_url_match else content
     return base64.b64decode(raw_data)
@@ -162,75 +123,19 @@ class FileTools:
     @tool(name="upload_document", description="Save uploaded file securely", input_schema=FileUploadInput)
     async def upload_document(self, input: FileUploadInput, context: ExecutionContext) -> dict:
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        
-        # Prevent directory traversal attacks
         safe_filename = Path(input.file_name).name
         destination = (UPLOAD_DIR / safe_filename).resolve()
         if not str(destination).startswith(str(UPLOAD_DIR.resolve())):
             raise ValueError("Invalid file path (path traversal detected).")
-
         file_bytes = decode_base64_file(input.file_content)
         destination.write_bytes(file_bytes)
-
-        context.logger.info(f"Saved file {safe_filename} ({len(file_bytes)} bytes)")
         return {"success": True, "saved_path": str(destination), "bytes": len(file_bytes)}
 ```
 
----
+## Do not
 
-## 5. Defining Resources (`@resource`)
-
-Resources expose data or files at custom URI schemes that AI clients can inspect.
-
-```python
-from nitrostack import injectable, resource, ResourceAnnotations, ExecutionContext
-
-@injectable()
-class ServerResources:
-    @resource(
-        uri="server://config",
-        name="Server Configuration",
-        description="System configuration parameters",
-        mime_type="application/json",
-        annotations=ResourceAnnotations(audience=["assistant"], priority=1.0),
-    )
-    async def get_config(self, context: ExecutionContext) -> dict:
-        return {"env": "production", "debug": False}
-```
-
----
-
-## 6. Defining Prompts (`@prompt`)
-
-Prompts expose parameterized prompt templates to guide LLM interactions.
-
-```python
-from nitrostack import injectable, prompt, PromptArgument, ExecutionContext
-
-@injectable()
-class AssistantPrompts:
-    @prompt(
-        name="code_review",
-        description="Review code according to security and style guidelines",
-        arguments=[
-            PromptArgument(name="language", description="Target language (e.g. Python)", required=True),
-            PromptArgument(name="code", description="Source code snippet", required=True),
-        ],
-    )
-    async def code_review_prompt(self, arguments: dict, context: ExecutionContext) -> list:
-        lang = arguments.get("language", "Python")
-        code = arguments.get("code", "")
-        return [
-            {
-                "role": "user",
-                "content": f"You are a senior {lang} engineer. Review this code for bugs and security:\n\n{code}",
-            }
-        ]
-```
-
----
-
-## Do Not
-- Do not use Zod (`z.object`) — use Pydantic `BaseModel`.
-- Do not forget `context: ExecutionContext` parameter on `@tool`, `@resource`, and `@prompt` methods.
-- Do not write unvalidated file paths directly to disk without path traversal checks.
+- Use `z.object` / Zod `inputSchema`.
+- Register a bare function as a tool without a controller class unless you are matching an existing example in this repo.
+- Invent Nest-style `@Controller('prefix')`. Python tools use the `name=` string as the MCP tool name.
+- Put `@cache` on a tool method: it cannot key on the Pydantic input. Cache a service method instead (runtime-features skill).
+- Write unvalidated file paths directly to disk without path traversal checks.
