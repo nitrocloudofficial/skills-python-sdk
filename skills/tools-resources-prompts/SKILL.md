@@ -5,11 +5,13 @@ description: Define MCP tools, resources, and prompts in NitroStack Python with 
 
 ## When to Use
 
-Defining, editing, or validating tools, resources, or prompts on a **Python** NitroStack server. Use Pydantic `BaseModel`, not Zod.
+Defining, editing, or validating tools, resources, or prompts on a **Python** NitroStack server. Use Pydantic `BaseModel`, not Zod. Caching, rate limits, and background tasks are in the runtime-features skill.
 
 ## Tools
 
 Decorate **async methods on an `@injectable` class** listed in the module's `controllers`. Signature is `(self, input: Model, context: ExecutionContext)`; `input` is an instance of `input_schema`.
+
+`@tool` options: `name`, `description`, `input_schema` (required), plus optional `title`, `output_schema`, `annotations` (`ToolAnnotations`), `task_support`, `visibility`, `examples` (`ToolExamples`), `invocation`, `metadata`.
 
 ```python
 from typing import Literal
@@ -32,7 +34,7 @@ class CalculatorTools:
         title="Calculate",
         description="Perform basic arithmetic calculations",
         input_schema=CalculateInput,
-        output_schema=CalculateOutput,  # optional; adds structuredContent
+        output_schema=CalculateOutput,
         annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True),
         examples=ToolExamples(
             input={"operation": "add", "a": 5, "b": 3},
@@ -46,20 +48,20 @@ class CalculatorTools:
         return {"result": result, "expression": f"{input.a:g} + {input.b:g} = {result:g}"}
 ```
 
-`@tool` keyword args: `name`, `description`, `input_schema` (required), plus optional `title`, `output_schema`, `annotations` (`ToolAnnotations`), `task_support` (see the runtime-features skill), `visibility`, `examples` (`ToolExamples`), `invocation`, `metadata`.
-
 - Always pass `examples`: client LLMs use them to get argument shapes right.
 - A tool with no arguments still needs an input model. Use an empty subclass (`class NoInput(BaseModel): pass`), never `BaseModel` itself, which fails at startup.
 - `visibility="hidden"` keeps a tool callable but out of `tools/list`.
 - Raise an exception to return an MCP error to the client.
 - Stack `@initial_tool` (before or after `@tool`) to auto-invoke on client connect.
 - Inspector sends empty strings for unused optionals; use Pydantic `field_validator(..., mode="before")` to coerce `""` to defaults when needed.
-- Keep database queries and business logic in a service (`providers`), injected into the controller. The controller only maps input to service calls.
+- Keep database queries and business logic in a service (`providers`), injected into the controller.
 
 ## Resources
 
+Resource handlers take `(self, context)`. List the class on the feature module `controllers`.
+
 ```python
-from nitrostack import injectable, resource, ExecutionContext
+from nitrostack import injectable, resource, ResourceAnnotations, ExecutionContext
 
 @injectable()
 class FlightResources:
@@ -68,12 +70,11 @@ class FlightResources:
         name="Popular Flight Routes",
         description="Information about popular routes and pricing",
         mime_type="application/json",
+        annotations=ResourceAnnotations(audience=["assistant"], priority=1.0),
     )
     async def popular_routes(self, context: ExecutionContext) -> dict:
         return {"routes": [{"from": "JFK", "to": "LHR"}]}
 ```
-
-Resource handlers take `(self, context)`. List the class on the feature module `controllers`.
 
 ## Prompts
 
@@ -94,9 +95,47 @@ class FlightPrompts:
         return [PromptMessage(role="user", content=f"Find flights to {args['destination']} with search_flights.")]
 ```
 
+## File uploads in tools (base64)
+
+Clients often send uploads as base64 strings in the tool input schema:
+
+```python
+import base64
+import os
+import re
+from pathlib import Path
+from pydantic import BaseModel, Field
+from nitrostack import injectable, tool, ExecutionContext
+
+class FileUploadInput(BaseModel):
+    file_name: str = Field(description="Original file name")
+    file_content: str = Field(description="Base64 or data-URL encoded content")
+
+UPLOAD_DIR = Path(os.getcwd()) / "uploads"
+
+def decode_base64_file(content: str) -> bytes:
+    data_url_match = re.match(r"^data:[^;]+;base64,(.+)$", content)
+    raw_data = data_url_match.group(1) if data_url_match else content
+    return base64.b64decode(raw_data)
+
+@injectable()
+class FileTools:
+    @tool(name="upload_document", description="Save uploaded file securely", input_schema=FileUploadInput)
+    async def upload_document(self, input: FileUploadInput, context: ExecutionContext) -> dict:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        safe_filename = Path(input.file_name).name
+        destination = (UPLOAD_DIR / safe_filename).resolve()
+        if not str(destination).startswith(str(UPLOAD_DIR.resolve())):
+            raise ValueError("Invalid file path (path traversal detected).")
+        file_bytes = decode_base64_file(input.file_content)
+        destination.write_bytes(file_bytes)
+        return {"success": True, "saved_path": str(destination), "bytes": len(file_bytes)}
+```
+
 ## Do not
 
 - Use `z.object` / Zod `inputSchema`.
 - Register a bare function as a tool without a controller class unless you are matching an existing example in this repo.
 - Invent Nest-style `@Controller('prefix')`. Python tools use the `name=` string as the MCP tool name.
-- Put `@cache` on a tool method: it can't key on the Pydantic input. Cache a service method instead (runtime-features skill).
+- Put `@cache` on a tool method: it cannot key on the Pydantic input. Cache a service method instead (runtime-features skill).
+- Write unvalidated file paths directly to disk without path traversal checks.

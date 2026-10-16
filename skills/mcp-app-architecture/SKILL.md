@@ -24,7 +24,35 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Optional: `@mcp_app(module=AppModule, server=ServerConfig(name="...", version="1.0.0"))` on a class sets the server name, transport and session limits in code (transports-cli skill). Factory-from-module is the template path.
+### With `ServerConfig` and transport in code (`@mcp_app`):
+
+```python
+import asyncio
+from nitrostack import mcp_app, McpApplicationFactory, ServerConfig
+from app_module import AppModule
+
+@mcp_app(
+    module=AppModule,
+    server=ServerConfig(
+        name="my-mcp-server",
+        version="1.0.0",
+        transport_type="stdio",  # "stdio", "http", or "dual"
+        max_sessions=100,
+        session_timeout_ms=1800000,
+    ),
+)
+class App:
+    pass
+
+async def main():
+    app = await McpApplicationFactory.create(App)
+    await app.start()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Transport flags and env overrides are documented in the transports-cli skill.
 
 The server name clients show comes from `SERVER_NAME` (set to the project folder by `init`) whenever the configured name is generic (`app`, `mcp-server`). Rename the project by changing `SERVER_NAME` in `.env`, not the root module's `name`.
 
@@ -51,7 +79,12 @@ class AppModule:
 
 ## Feature modules
 
-One directory per feature under `modules/`. Put `@tool` / `@resource` / `@prompt` classes in `controllers`. Put services in `providers`, and in `exports` if other modules need them.
+One directory per feature under `modules/`.
+
+- **controllers**: classes with `@tool`, `@resource`, or `@prompt`.
+- **providers**: services managed by the DI container.
+- **imports**: other modules whose exported providers are needed here.
+- **exports**: providers made available to modules that import this one.
 
 ```
 modules/fixtures/
@@ -63,18 +96,19 @@ modules/fixtures/
 ```python
 from nitrostack import module
 from modules.calculator.calculator_tools import CalculatorTools
+from modules.calculator.calculator_service import CalculatorService
 
 @module(
     name="calculator",
     controllers=[CalculatorTools],
-    providers=[],
-    exports=[],
+    providers=[CalculatorService],
+    exports=[CalculatorService],
 )
 class CalculatorModule:
     pass
 ```
 
-Scaffold with `nitrostack-py generate module <name>` and `nitrostack-py generate service <Name>`.
+Scaffold with `nitrostack-py generate module <name>` and `nitrostack-py generate service <Name>` (see transports-cli skill for other generators).
 
 ## Dependency injection
 
@@ -98,7 +132,7 @@ Settings come from `ConfigService` (config-environment skill).
 
 ## Health checks and events
 
-Register a provider with `@health_check("system")` on a method that returns a bool (see `health/system_health.py`). Events, caching, rate limits and long-running tasks are in the runtime-features skill.
+Register a provider with `@health_check("system")` on a method that returns a bool (see `health/system_health.py`). Caching, rate limits, long-running tasks, and the event bus are in the runtime-features skill.
 
 ## Do not
 
@@ -106,3 +140,4 @@ Register a provider with `@health_check("system")` on a method that returns a bo
 - Put `@tool` methods on a module class that is only a `@module` config holder.
 - Skip `ConfigModule.for_root` if the app reads `.env`.
 - Write database queries inside tool methods. Put them in a service.
+- Instantiate services manually with `SomeService()`; use constructor DI via `@injectable(deps=[...])`.
