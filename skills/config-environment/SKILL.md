@@ -15,7 +15,7 @@ Highest first:
 2. The project's `.env`.
 3. `ConfigModule.for_root(defaults={...})`.
 
-`.env` never overwrites a variable that is already set (nitrostack 0.4.1 and later). NitroStudio starts each project with its own `PORT`, so several servers can run side by side even though `.env` says `PORT=3000`. On older SDKs `.env` won. Projects run the SDK copy in `vendor/nitrostack`, so check its version (`vendor/nitrostack/pyproject.toml`) when `.env` seems to override the environment.
+`.env` never overwrites a variable that is already set (nitrostack 0.4.1 and later). NitroStudio starts each project with its own `PORT`, so several servers can run side by side even though `.env` says `PORT=3000`. On older SDKs `.env` won. Projects run the SDK copy in `vendor/nitrostack`, so check its version (`vendor/nitrostack/pyproject.toml`) when `.env` seems to override the environment, then run `nitrostack-py upgrade` and `nitrostack-py install`. If `upgrade` fails with "Refusing to write an invalid pyproject.toml", the CLI is older than 0.4.2: run `uvx --from nitrostack nitrostack-py upgrade`.
 
 ## Read settings with ConfigService
 

@@ -40,7 +40,7 @@ Protocol era: `MCP_STATELESS=true` forces stateless HTTP (MCP Inspector), `false
 | `nitrostack-py start` | Production server |
 | `nitrostack-py generate tool\|module\|guard\|pipe\|interceptor\|filter\|service <name>` | Boilerplate |
 | `nitrostack-py install [--production]` | Install dependencies (`uv sync` when uv is on PATH) |
-| `nitrostack-py upgrade [--version X.Y.Z] [--dry-run]` | Update the `nitrostack` dependency spec and refresh agent skills |
+| `nitrostack-py upgrade [--version X.Y.Z] [--dry-run]` | Move the project to another SDK release (replaces `vendor/nitrostack` from 0.4.2), and refresh agent skills |
 | `nitrostack-py validate` | Check dependencies, `@mcp_app` imports and `@module()` references |
 | `nitrostack-py pack [--dry-run]` | Build a wheel in `dist/` (never includes `.env`) |
 | `nitrostack-py register --name <server> --file main.py` | Add the server to Claude Desktop's config |
