@@ -7,43 +7,66 @@ description: Guards, middleware, interceptors, pipes, and exception filters on N
 
 Authorizing or transforming a tool/resource/prompt call in the **Python** SDK (`nitrostack.core.pipeline`).
 
-## Stacking on a handler
+## Stages
 
-Decorators attach lists on the function: `_mcp_guards`, `_mcp_middleware`, `_mcp_interceptors`, `_mcp_pipes`, `_mcp_filters`.
+Each stage is a small class with one async method. Attach it with a decorator below `@tool`.
+
+| Stage | Method | Attach with | Runs |
+|---|---|---|---|
+| Guard | `can_activate(context) -> bool` | `@use_guards(...)` | first; `False` rejects the call ("Access denied by guard") |
+| Pipe | `transform(value, metadata: PipeMetadata)` | `@use_pipes(...)` | on the tool input, after guards |
+| Middleware | `use(context, next_fn)` | `@use_middleware(...)` | around interceptors and the tool |
+| Interceptor | `intercept(context, next_fn)` | `@use_interceptors(...)` | around the tool; can change its result |
+| Exception filter | `catch(error, context)` | `@use_filters(...)` | on errors; its return value becomes the result |
+
+`PipeMetadata` (`param_name`, `param_type`) is imported from `nitrostack.core.pipeline`.
 
 ```python
-from nitrostack import tool, use_guards, OAuthGuard, ExecutionContext
-from guards.oauth_guard import create_scope_guard
+from pydantic import BaseModel
+from nitrostack import injectable, tool, use_guards, use_interceptors, use_filters, ExecutionContext
 
-@tool(name="search_flights", description="...", input_schema=SearchFlightsInput)
-@use_guards(OAuthGuard, create_scope_guard(["read"]))
-async def search_flights(self, input: SearchFlightsInput, context: ExecutionContext) -> dict:
-    ...
+class LookupInput(BaseModel):
+    city: str
+
+class OfficeHoursGuard:
+    async def can_activate(self, context: ExecutionContext) -> bool:
+        return context.metadata.get("office_open", True)
+
+class TimingInterceptor:
+    async def intercept(self, context: ExecutionContext, next_fn):
+        result = await next_fn()
+        context.logger.info(f"{context.tool_name} finished")
+        return result
+
+class FriendlyErrors:
+    async def catch(self, error: Exception, context: ExecutionContext):
+        return {"error": str(error)}
+
+@injectable()
+class WeatherTools:
+    @tool(name="get_forecast", description="Forecast for a city", input_schema=LookupInput)
+    @use_guards(OfficeHoursGuard)
+    @use_interceptors(TimingInterceptor)
+    @use_filters(FriendlyErrors)
+    async def get_forecast(self, input: LookupInput, context: ExecutionContext) -> dict:
+        return {"city": input.city, "forecast": "sunny"}
 ```
 
-Same pattern: `use_middleware`, `use_interceptors`, `use_pipes`, `use_filters`.
+A guard factory (a function returning a guard class) is fine when the guard needs parameters; see `create_scope_guard` in the oauth template.
 
-## Protocols
+Scaffold with `nitrostack-py generate guard|pipe|interceptor|filter <Name>` (writes `guards/`, `pipes/`, `interceptors/`, `filters/`).
 
-Implement these as classes (often returned from a factory):
+## Built-in guards
 
-- **Guard** — `async def can_activate(self, context: ExecutionContext) -> bool`
-- **Middleware** — `async def use(self, context, next_fn)`
-- **Interceptor** — `async def intercept(self, context, next_fn)`
-- **Pipe** — `async def transform(self, value, metadata: PipeMetadata)`
-- **ExceptionFilter** — `async def catch(self, error, context)`
+- `ApiKeyGuard`: checks the `x-api-key` header against `ApiKeyModule` keys. Register `ApiKeyModule.for_root()` when you use it: without the module the guard falls back to the `API_KEY` variable, and with neither set it **lets every call through**.
+- `JwtGuard`: `Authorization: Bearer <jwt>`, configured by `JWTModule`; fills `context.auth`.
+- `OAuthGuard`: introspects or verifies the OAuth access token; see the auth-security skill.
+- `require_scopes("admin")`: stack under an auth guard; rejects unless `context.auth` has every listed scope.
 
-Scaffold with `nitrostack-py generate guard|pipe|interceptor|filter <Name>`.
-
-## Built-ins
-
-- `ApiKeyGuard` — `x-api-key` in metadata/headers; `ApiKeyService` or `API_KEY` env.
-- `JwtGuard` — `Authorization: Bearer`; fills `context.auth`.
-- `OAuthGuard` — introspects the access token; see the auth-security skill.
-
-Read tokens from `context.metadata` (`authorization`, `headers`, `_oauth`). Do not assume Express/Nest request objects.
+Read tokens and request data from `context.metadata` (`authorization`, `headers`, `_oauth`). There are no Express/Nest request objects.
 
 ## Do not
 
 - Use TypeScript `UseGuards()` / Nest middleware.
-- Fail closed on missing OAuth when `OAUTH_REQUIRED` is unset — `OAuthGuard` allows no-token when oauth is not required (Studio mock flights).
+- Fail closed on missing OAuth when `OAUTH_REQUIRED` is unset. `OAuthGuard` allows no-token calls when OAuth is not required (local Studio/Inspector).
+- Use `ApiKeyGuard` without `ApiKeyModule` or `API_KEY`: it then protects nothing.
